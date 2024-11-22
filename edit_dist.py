@@ -5,6 +5,12 @@ import multiprocessing
 import time
 from tqdm import tqdm
 import argparse
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, pandas_udf
+from pyspark.sql.types import IntegerType
+
+os.environ["PYSPARK_PYTHON"] = r"C:\Users\ashtik\miniconda3\python.exe"
+os.environ["PYSPARK_DRIVER_PYTHON"] = r"C:\Users\ashtik\miniconda3\python.exe"
 
 def edit_distance(pair):
     str1, str2 = pair
@@ -28,11 +34,20 @@ def edit_distance(pair):
 
     return dp[m][n]
 
+@pandas_udf(IntegerType())
+def compute_edit_distance_udf(str1_series, str2_series):
+    results = []
+    for str1, str2 in zip(str1_series, str2_series):
+        results.append(edit_distance((str1, str2)))
+    return pd.Series(results)
+
+
 # Function to compute edit distances using multiple processes
 def compute_edit_distance_multiprocess(pair, num_workers):
     # implement a multi-process version of edit_distance function
-
-    raise NotImplementedError("This function is not implemented yet.")
+    with multiprocessing.Pool(processes=num_workers) as pool:
+        results = pool.map(edit_distance, pair_data)
+    return results
 
 
 if __name__=="__main__":
@@ -45,7 +60,7 @@ if __name__=="__main__":
 
     # Number of processes to use (set to the number of CPU cores)
     num_workers = multiprocessing.cpu_count()
-    print(f'number of available cpu cores: {num_workers}')
+    # print(f'number of available cpu cores: {num_workers}')
     # Sample list of string pairs
     text_data = pd.read_csv(args.csv_dir)['sentence']
     text_data = text_data[:args.num_sentences]
@@ -57,33 +72,44 @@ if __name__=="__main__":
     # Convert pair data to Spark DataFrame
     # Register the edit distance function as a pandas UDF for single pairs
     # Compute edit distances using Spark
-    start_time = time.time()
-    
-    
-    end_time = time.time()
+    spark = SparkSession.builder \
+        .appName("EditDistance") \
+        .getOrCreate()
 
-    print(f"Time taken (Spark): {end_time - start_time:.2f} seconds")
+    pair_df = pd.DataFrame(pair_data, columns=['str1', 'str2'])
+    spark_df = spark.createDataFrame(pair_df)   
+
+    start_1 = time.time()
+    result_df = spark_df.withColumn("edit_distance", compute_edit_distance_udf(col("str1"), col("str2")))
+    # result_df.show()
+    end_1 = time.time()
+    time_1 = end_1 - start_1
+    # print(f"Time taken (Spark): {start_1 - end_1:.2f} seconds")
 
     # Stop the Spark session
-
+    spark.stop()
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # Multi-process
-    start_time = time.time()
+    start_2 = time.time()
     # Compute edit distances in parallel
     edit_distances = compute_edit_distance_multiprocess(pair_data, num_workers)
-    end_time = time.time()
+    end_2 = time.time()
+    time_2 = end_2 - start_2
     # print(f"Number of string pairs processed: {len(edit_distances)}")
-    print(f"Time taken (multi-process): {end_time - start_time:.3f} seconds")
+    # print(f"Time taken (multi-process): {start_2 - end_2:.3f} seconds")
 
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # Vanilla for loop
-    start_time = time.time()
+    start_3 = time.time()
     distances = []
     for pair in tqdm(pair_data, ncols=100):
         distances.append(edit_distance(pair))
-    end_time = time.time()
+    end_3 = time.time()
+    time_3 = end_3 - start_3
     # print(f"Edit Distances (Non-Spark): {distances}")
-    print(f"Time taken (for-loop): {end_time - start_time:.3f} seconds")
+    # print(f"Time taken (for-loop): {time_3:.3f} seconds")
+
+    print(f"Time cost (Spark, multi-process, for-loop): [{time_1:.3f}, {time_2:.3f}, {time_3:.3f}]")
